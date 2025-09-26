@@ -16,7 +16,7 @@ module.exports = class TarotPlugin extends Plugin {
     // Add a command for drawing Tarot cards
     this.addCommand({
       id: 'tarot-draw',
-      name: 'Draw Tarot Cards',
+      name: 'Draw tarot cards',
       callback: async () => {
         const selectedSpread = await this.selectSpread();
         if (!selectedSpread) {
@@ -32,18 +32,34 @@ module.exports = class TarotPlugin extends Plugin {
 
         const drawnCards = this.drawCards(cardCount);
         const markdown = this.generateMarkdown(selectedSpread, drawnCards);
-        await this.appendToDailyNote(markdown);
+        await this.appendToCurrentNote(markdown);
       },
     });
 
+    // Auto-add to daily notes when created
     this.registerEvent(this.app.vault.on("create", async (file) => {
       if (this.isDailyNoteFile(file)) {
-        const drawnCards = this.drawCards(3);
-        const markdown = this.generateMarkdown("Three Card Spread", drawnCards);
-        await this.appendToDailyNote(file, markdown);
-      } else {
+        // Small delay to ensure file is ready
+        setTimeout(async () => {
+          const drawnCards = this.drawCards(3);
+          const markdown = this.generateMarkdown("Three Card Spread", drawnCards);
+          await this.appendToDailyNote(file, markdown);
+        }, 100);
       }
-    }));    
+    }));
+    
+    // Also check when files are opened (for existing daily notes)
+    this.registerEvent(this.app.workspace.on("file-open", async (file) => {
+      if (file && this.isDailyNoteFile(file)) {
+        const content = await this.app.vault.read(file);
+        // Check if tarot reading already exists
+        if (!content.includes("> [!INFO] Tarot:")) {
+          const drawnCards = this.drawCards(3);
+          const markdown = this.generateMarkdown("Three Card Spread", drawnCards);
+          await this.appendToDailyNote(file, markdown);
+        }
+      }
+    }));
   }
 
   async onunload() {
@@ -209,38 +225,90 @@ module.exports = class TarotPlugin extends Plugin {
 
   generateMarkdown(spreadName, cards) {
     return `> [!INFO] Tarot: ${spreadName}
-  >
-  ${cards
-      .map((card, index) => {
-        const meaning = this.tarotMeanings[card] || {
-          upright: "Meaning not available",
-          reversed: "Meaning not available",
-        };
-        // Randomly pick upright or reversed
-        const orientation = Math.random() > 0.5 ? "Upright" : "Reversed";
-  
-        return `> ${index + 1}. **${card}** (${orientation}): ${meaning[orientation.toLowerCase()]}`;
-      })
-      .join("\n")}\n\n---`;
-  }  
+>
+${cards
+    .map((card, index) => {
+      const meaning = this.tarotMeanings[card] || {
+        upright: "Meaning not available",
+        reversed: "Meaning not available",
+      };
+      // Randomly pick upright or reversed
+      const orientation = Math.random() > 0.5 ? "Upright" : "Reversed";
+
+      return `> ${index + 1}. **${card}** (${orientation}): ${meaning[orientation.toLowerCase()]}`;
+    })
+    .join("\n")}`;
+  }
 
   async appendToDailyNote(file, markdownText) {
     try {
       const content = await this.app.vault.read(file);
   
-      // Avoid appending duplicate content
-      if (content.includes("# Tarot Reading:")) {
+      // Check for the actual content that's being added
+      if (content.includes("> [!INFO] Tarot:")) {
         console.log("Tarot Reading already added to the daily note.");
         return;
       }
   
       const updatedContent = `${content}\n\n${markdownText}`;
       await this.app.vault.modify(file, updatedContent);
+      new Notice("Tarot reading added to daily note");
     } catch (error) {
       console.error("Error appending to daily note:", error);
+      new Notice("Error adding tarot reading to daily note");
     }
-  }  
-  
+  }
+
+  async appendToCurrentNote(markdownText) {
+    try {
+      // Get the active file
+      const activeFile = this.app.workspace.getActiveFile();
+      
+      if (!activeFile) {
+        // If no active file, try to append to today's daily note
+        const dailyNotesConfig = this.app.internalPlugins.plugins["daily-notes"]?.instance?.options;
+        if (!dailyNotesConfig) {
+          new Notice("No active file and Daily Notes plugin is not configured.");
+          return;
+        }
+
+        const dailyNoteFolder = dailyNotesConfig.folder || "Journal";
+        const dateFormat = dailyNotesConfig.format || "YYYY-MM-DD";
+        const today = window.moment().format(dateFormat);
+        const expectedPath = `${dailyNoteFolder}/${today}.md`;
+        
+        let file = this.app.vault.getAbstractFileByPath(expectedPath);
+        
+        if (!file) {
+          // Create the daily note if it doesn't exist
+          try {
+            file = await this.app.vault.create(expectedPath, '');
+          } catch (error) {
+            new Notice('Could not create daily note');
+            return;
+          }
+        }
+        
+        await this.appendToDailyNote(file, markdownText);
+      } else {
+        // Append to the active file
+        const content = await this.app.vault.read(activeFile);
+        
+        // Check if tarot reading already exists
+        if (content.includes("> [!INFO] Tarot:")) {
+          new Notice("This note already contains a tarot reading.");
+          return;
+        }
+        
+        const updatedContent = `${content}\n\n${markdownText}`;
+        await this.app.vault.modify(activeFile, updatedContent);
+        new Notice("Tarot reading added to current note");
+      }
+    } catch (error) {
+      console.error("Error appending tarot reading:", error);
+      new Notice("Error adding tarot reading");
+    }
+  }
 
   isDailyNoteFile(file) {
     const dailyNotesConfig = this.app.internalPlugins.plugins["daily-notes"]?.instance?.options;
@@ -257,5 +325,5 @@ module.exports = class TarotPlugin extends Plugin {
     const isDailyNote = file.path === expectedPath;
   
     return isDailyNote;
-  }  
+  }
 }
